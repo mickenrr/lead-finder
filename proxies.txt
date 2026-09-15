@@ -1,0 +1,5 @@
+# proxy6.net — формат ip:port:username:password
+45.10.67.79:8000:H187QM:ebRp9w
+45.10.66.169:8000:H187QM:ebRp9w
+45.10.66.154:8000:H187QM:ebRp9w
+185.80.149.60:8000:H187QM:ebRp9w

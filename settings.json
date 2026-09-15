@@ -1,0 +1,8 @@
+{
+  "revenue_max": 1000000000,
+  "income_tax_rule": {
+    "mode": "any",
+    "years": 3,
+    "min_amount": 5000000
+  }
+}

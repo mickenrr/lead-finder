@@ -1,0 +1,7 @@
+flask==3.1.3
+requests==2.34.2
+beautifulsoup4==4.15.0
+python-dotenv==1.2.2
+PySocks==1.7.1
+playwright==1.61.0
+# anthropic нужен только если tg_bot.py запускается отдельно — для lead_finder не нужен

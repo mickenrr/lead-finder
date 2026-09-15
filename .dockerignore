@@ -1,0 +1,10 @@
+.env
+__pycache__
+*.pyc
+*.pyo
+backups/
+pipeline.log
+lead_finder_state.json
+tg_profile/
+*.log
+.git
