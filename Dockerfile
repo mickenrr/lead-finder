@@ -17,4 +17,4 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 # Railway/Render подставят PORT автоматически
 EXPOSE 8082
 
-CMD ["python", "app_finder.py"]
+CMD ["python", "app.py"]

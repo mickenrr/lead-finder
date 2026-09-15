@@ -755,5 +755,6 @@ es.onerror = function() {
 
 
 if __name__ == '__main__':
-    print('Brizo Parser UI → http://localhost:8080')
-    app.run(host='0.0.0.0', port=8080, debug=False, threaded=True)
+    port = int(os.getenv("PORT", "8080"))
+    print(f'Brizo Parser UI → http://localhost:{port}')
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
