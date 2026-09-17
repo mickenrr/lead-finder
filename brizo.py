@@ -535,6 +535,10 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             break
 
         for item in items:
+            # Skip deals not in «База» — confirmed: API returns "База" string for that stage
+            if item.get("status.name") not in (None, "База"):
+                continue
+
             name = (item.get("name") or item.get("title") or "").strip()
             if not name:
                 continue
@@ -585,10 +589,13 @@ def get_new_leads(page: Page, max_leads: int = 9999) -> list[dict]:
     """
     # Try REST API first — avoids browser scrolling that crashes in Docker/low-memory
     api_leads = _get_base_leads_via_api(max_leads)
-    if api_leads is not None:
+    if api_leads is not None and len(api_leads) > 0:
         return api_leads
 
-    log.info("API не доступен — используем браузерный скролл")
+    if api_leads is not None:
+        log.info("API вернул 0 лидов (лиды за пределами %d стр.) — используем браузерный скролл", 30)
+    else:
+        log.info("API не доступен — используем браузерный скролл")
     log.info("Loading deals board")
     if "/cabinet/deals" not in page.url:
         page.goto(f"{BRIZO_URL}/cabinet/deals", timeout=TIMEOUT, wait_until="domcontentloaded")
