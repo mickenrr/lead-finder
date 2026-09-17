@@ -463,6 +463,12 @@ def login(page: Page, email: str = MY_EMAIL, password: str = MY_PASSWORD) -> Non
             )
 
     log.info("Logged in at %s", page.url)
+    # After login the SPA redirects /cabinet/ → /cabinet/deals which destroys
+    # the JS execution context mid-query. Navigate explicitly to /cabinet/deals
+    # and wait for domcontentloaded so the context is stable before any DOM call.
+    if "/cabinet/deals" not in page.url:
+        page.goto(f"{BRIZO_URL}/cabinet/deals", timeout=TIMEOUT, wait_until="domcontentloaded")
+    time.sleep(1.5)
     _wait_for_kanban(page)
     log.info("Login complete")
 
@@ -1023,6 +1029,26 @@ def add_comment(page: Page, lead_id: str, text: str) -> None:
 _FIELD_CHECKO = 483103   # 'Чекко', type=5 (URL)
 
 
+def fill_contact_details(lead_id: str, website: str = "", email: str = "") -> None:
+    """Fill Сайт and/or Корпоративная почта fields via REST API for an existing deal."""
+    fields = []
+    if website:
+        fields.append({"id": _FIELD_SITE,       "value": website})
+    if email:
+        fields.append({"id": _FIELD_CORP_EMAIL,  "value": email})
+    if not fields:
+        return
+    sess = _get_api_session()
+    if not sess:
+        log.warning("fill_contact_details: no API session")
+        return
+    r = sess.patch(f"{BRIZO_URL}/api/deals/{lead_id}/fields", json=fields, timeout=10)
+    if r.status_code in (200, 201):
+        log.info("Сайт/почта записаны в Brizo для сделки %s ✓", lead_id)
+    else:
+        log.warning("fill_contact_details failed %s — %s", r.status_code, r.text[:200])
+
+
 def fill_checko_field(page: Page, lead_id: str, url: str) -> None:
     """Fill the 'Чекко' URL field via REST API (no browser popup needed)."""
     log.info("Filling Чекко field for deal %s: %s", lead_id, url)
@@ -1359,10 +1385,27 @@ def add_contact(page: Page, lead_id: str, name: str, inn: str, role: str) -> Non
 
 def _wait_for_kanban(page: Page) -> None:
     """Poll until at least one kanban card is present."""
+    # Wait for any in-flight navigation to settle before touching the DOM.
+    # SPA frameworks (Vue.js) often do a secondary redirect after login which
+    # destroys the JS execution context mid-query_selector.
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=15_000)
+    except Exception:
+        pass
+
     deadline = time.time() + POLL_MAX
     while time.time() < deadline:
-        if page.query_selector("a.kanban-card-deal"):
-            return
+        try:
+            if page.query_selector("a.kanban-card-deal"):
+                return
+        except Exception as exc:
+            # "Execution context was destroyed" — navigation still in progress
+            log.debug("_wait_for_kanban: navigation mid-query, retrying (%s)", exc)
+            time.sleep(1)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10_000)
+            except Exception:
+                pass
         time.sleep(POLL_INTERVAL)
     log.error("Kanban did not load in %ds", POLL_MAX)
 
@@ -1461,8 +1504,9 @@ _FIELD_INN_DIR    = 504161   # ИНН генерального директор�
 _FIELD_CORP_EMAIL = 485095   # Корпоративная почта
 
 # Option ID for «Источник сделки» = "робот Ника" (id 30581 from /api/fields?model_id=1)
-# Ранее было "чекко" (28409) — заменено на "робот Ника" по запросу.
-_SOURCE_CHECKO = 30581
+# Ставится на все сделки, создаваемые ботом (и из Checko, и из Dadata) —
+# это не "пришло через Checko", а "создано автоматически роботом".
+_SOURCE_ROBOT_NIKA = 30581
 
 
 def is_inn_in_brizo(inn: str) -> bool:
@@ -1548,13 +1592,14 @@ def create_deal(
 
     # Step 2 — fill all available fields
     fields: list[dict] = [
-        # Источник сделки = "чекко" — всегда, для всех лидов из лид-файндера
-        {"id": _FIELD_SOURCE, "value": _SOURCE_CHECKO},
+        # Источник сделки = "робот Ника" — на всех сделках, создаваемых ботом,
+        # независимо от того, откуда пришли данные (Checko или Dadata).
+        {"id": _FIELD_SOURCE, "value": _SOURCE_ROBOT_NIKA},
     ]
-    if inn:
-        fields.append({"id": _FIELD_INN,    "value": inn})
     if checko_url:
         fields.append({"id": _FIELD_CHECKO, "value": checko_url})
+    if inn:
+        fields.append({"id": _FIELD_INN,    "value": inn})
     if website:
         fields.append({"id": _FIELD_SITE,   "value": website})
     if region:
