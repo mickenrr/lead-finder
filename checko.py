@@ -418,19 +418,28 @@ _CURL_SESSION.headers.update({
 
 def _resolve_url(inn: str) -> str | None:
     """
-    Resolve INN → Checko company URL.
+    Resolve INN → Checko company URL using Playwright browser only (no curl).
 
-    Strategy (all by INN, not company name):
-    1. Navigate to /?q={INN} → click first result  (основной)
-    2. Navigate to /search?query={INN} → click first result  (запасной)
-    3. curl GET /?q={INN} → parse HTML for company link  (HTTP-резерв)
+    Strategy:
+    1. Navigate to /?q={INN} — wait networkidle — check redirect / find link
+    2. Navigate to /search?query={INN} — same logic (fallback)
     """
     _SKIP = ("/select", "/updates", "/edit", "/contacts", "/details", "/finances", "/activity")
 
-    def _first_company_link_js() -> str | None:
-        """Extract first /company/ link from current page via JS."""
+    page = _get_pw_page()
+
+    def _company_url_from_page() -> str | None:
+        """
+        After navigation: if Checko redirected to a company page → return it.
+        Otherwise find first /company/ link in search results via JS.
+        """
+        current = page.url or ""
+        if "/company/" in current and "?q=" not in current and "/search" not in current:
+            clean = current.split("?")[0].rstrip("/")
+            print(f"[checko] редирект на страницу компании: {clean}")
+            return clean
         try:
-            links = _get_pw_page().evaluate("""() => {
+            links = page.evaluate("""() => {
                 return Array.from(document.querySelectorAll('a[href*="/company/"]'))
                     .filter(a => {
                         const h = a.href || '';
@@ -441,71 +450,40 @@ def _resolve_url(inn: str) -> str | None:
                     })
                     .map(a => a.href);
             }""")
-            return links[0] if links else None
-        except Exception:
-            return None
-
-    def _search_in_html(html: str, base_url: str) -> str | None:
-        """Parse company link from static HTML."""
-        if "/company/" in base_url and "/search" not in base_url and "?q=" not in base_url:
-            return base_url.split("?")[0].rstrip("/")
-        links = re.findall(r'href=["\'](/company/[^"\'?&]+)["\']', html)
-        filtered = [l for l in links if not any(x in l for x in _SKIP)]
-        return (BASE_URL + filtered[0]) if filtered else None
-
-    page = _get_pw_page()
-
-    def _url_after_goto(target_url: str) -> str | None:
-        """
-        Navigate to target_url. If Checko redirects to a company page → return it.
-        Otherwise find first /company/ link via JS.
-        """
-        try:
-            page.goto(target_url, timeout=25_000, wait_until="domcontentloaded")
-            time.sleep(2.5)
-            current = page.url or ""
-            # Checko may redirect directly to the company page for unique INN queries
-            if "/company/" in current and "?q=" not in current and "/search" not in current:
-                clean = current.split("?")[0].rstrip("/")
-                print(f"[checko] редирект на страницу компании: {clean}")
-                return clean
-            # Otherwise extract first company link from search results
-            found = _first_company_link_js()
-            print(f"[checko] url={current[:80]}  ссылок={'1' if found else '0'}")
-            return found
+            if links:
+                print(f"[checko] найдена ссылка на компанию: {links[0]}")
+                return links[0]
         except Exception as e:
-            print(f"[checko] goto {target_url} failed: {e}")
+            print(f"[checko] JS eval error: {e}")
+        print(f"[checko] url={current[:80]}  ссылок=0")
+        return None
+
+    def _goto_and_find(target_url: str) -> str | None:
+        try:
+            print(f"[checko] browser goto: {target_url}")
+            page.goto(target_url, timeout=30_000, wait_until="domcontentloaded")
+            try:
+                page.wait_for_load_state("networkidle", timeout=8_000)
+            except Exception:
+                pass
+            return _company_url_from_page()
+        except Exception as e:
+            print(f"[checko] goto failed ({target_url}): {e}")
             return None
+
+    print(f"[checko] ищем по ИНН {inn}")
 
     # ── 1. Основной: /?q={INN} ───────────────────────────────────────────────
-    search_q_url = f"{BASE_URL}/?q={inn}"
-    print(f"[checko] ищем по ИНН {inn}: {search_q_url}")
-    found = _url_after_goto(search_q_url)
+    found = _goto_and_find(f"{BASE_URL}/?q={inn}")
     if found:
-        print(f"[checko] found via /?q= for INN {inn}: {found}")
+        print(f"[checko] INN {inn} → {found}")
         return found
 
     # ── 2. Запасной: /search?query={INN} ─────────────────────────────────────
-    search_url = f"{BASE_URL}/search?query={inn}"
-    print(f"[checko] запасной поиск: {search_url}")
-    found = _url_after_goto(search_url)
+    found = _goto_and_find(f"{BASE_URL}/search?query={inn}")
     if found:
-        print(f"[checko] found via /search?query= for INN {inn}: {found}")
+        print(f"[checko] INN {inn} → {found}")
         return found
-
-    # ── 3. HTTP-резерв: curl GET /?q={INN} ───────────────────────────────────
-    try:
-        r = _CURL_SESSION.get(search_q_url, timeout=15, allow_redirects=True)
-        if r.status_code == 200:
-            found = _search_in_html(r.text, r.url)
-            if found:
-                print(f"[checko] found via curl /?q= for INN {inn}: {found}")
-                return found
-            print(f"[checko] curl /?q=: 200 но ссылок нет (html={len(r.text)})")
-        else:
-            print(f"[checko] curl /?q=: HTTP {r.status_code}")
-    except Exception as e:
-        print(f"[checko] curl /?q= failed for INN {inn}: {e}")
 
     print(f"[checko] could not resolve URL for INN {inn}")
     return None
