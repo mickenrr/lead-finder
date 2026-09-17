@@ -379,7 +379,7 @@ def main() -> None:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
-            viewport={"width": 1920, "height": 1080},
+            viewport={"width": 1280, "height": 720},
             ignore_https_errors=True,
         )
         # Hide webdriver fingerprint

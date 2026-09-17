@@ -477,19 +477,99 @@ def login(page: Page, email: str = MY_EMAIL, password: str = MY_PASSWORD) -> Non
 # 2. Get new leads from "База" column
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
+    """
+    Fetch qualifying deals from «База» via REST API — no browser scrolling needed.
+    Returns list or None if API is unavailable.
+    """
+    sess = _get_api_session()
+    if not sess:
+        return None
+
+    results: list[dict] = []
+    page_num = 1
+    per_page = 200
+
+    while len(results) < max_leads:
+        try:
+            r = sess.get(
+                f"{BRIZO_URL}/api/funnels/21480/deals/table",
+                params={"status_id": BASE_STATUS_ID, "limit": per_page, "page": page_num},
+                timeout=20,
+            )
+            r.raise_for_status()
+            body = r.json()
+        except Exception as e:
+            log.warning("[api_leads] Запрос к API не удался: %s", e)
+            return None
+
+        # Log structure on first page so we can diagnose format issues
+        if page_num == 1:
+            log.info("[api_leads] HTTP %s  keys=%s  meta=%s",
+                     r.status_code, list(body.keys()), body.get("meta"))
+
+        items = body.get("data") or body.get("items") or body.get("deals") or []
+        if not items:
+            log.info("[api_leads] Пустой ответ или другой ключ. Пробуем items ключи: %s",
+                     list(body.keys()))
+            break
+
+        for item in items:
+            name = (item.get("name") or item.get("title") or "").strip()
+            if not name:
+                continue
+
+            # Filter: only legal entities
+            first_word = name.split()[0]
+            if first_word not in _LEGAL_PREFIXES:
+                continue
+
+            # Filter: skip prefixes
+            if any(name.startswith(p) for p in SKIP_PREFIXES):
+                continue
+
+            # Filter: responsible must be RESPONSIBLE
+            members = item.get("members") or item.get("participants") or []
+            resp_ok = any(
+                RESPONSIBLE in (m.get("name") or m.get("user", {}).get("name") or "")
+                for m in members
+                if m.get("type") in ("responsible", "owner", None)
+            )
+            if not resp_ok:
+                continue
+
+            # Filter: no other participants (total members == 1)
+            if len(members) > 1:
+                continue
+
+            deal_id = str(item.get("id") or "")
+            if deal_id and deal_id not in {r["id"] for r in results}:
+                results.append({"id": deal_id, "name": name, "inn": ""})
+                log.info("Qualified (API): id=%s  name=%s", deal_id, name[:50])
+                if len(results) >= max_leads:
+                    break
+
+        total = body.get("meta", {}).get("overal_count") or body.get("meta", {}).get("total") or 0
+        if not items or page_num * per_page >= total:
+            break
+        page_num += 1
+
+    log.info("[api_leads] Найдено через API: %d лидов", len(results))
+    return results
+
+
 def get_new_leads(page: Page, max_leads: int = 9999) -> list[dict]:
     """
-    Return qualifying deals from the "База" kanban column by scrolling through
-    all virtual-DOM cards (Brizo only renders ~25 at a time).
-
-    Filters:
-      - Responsible is RESPONSIBLE
-      - No other participants (only 1 avatar on card)
-      - No comments / tasks (all counters = 0)
-      - Title does not start with SKIP_PREFIX
-
+    Return qualifying deals from the "База" kanban column.
+    Tries REST API first (no browser needed), falls back to browser scrolling.
     Each dict: {id, name, inn}.
     """
+    # Try REST API first — avoids browser scrolling that crashes in Docker/low-memory
+    api_leads = _get_base_leads_via_api(max_leads)
+    if api_leads is not None:
+        return api_leads
+
+    log.info("API не доступен — используем браузерный скролл")
     log.info("Loading deals board")
     if "/cabinet/deals" not in page.url:
         page.goto(f"{BRIZO_URL}/cabinet/deals", timeout=TIMEOUT, wait_until="domcontentloaded")
