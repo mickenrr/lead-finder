@@ -501,12 +501,15 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
                     "limit": per_page,
                     "page": page_num,
                 },
-                timeout=20,
+                timeout=30,
             )
             r.raise_for_status()
             body = r.json()
         except Exception as e:
-            log.warning("[api_leads] Запрос к API не удался: %s", e)
+            log.warning("[api_leads] Запрос к API не удался (стр. %d): %s", page_num, e)
+            if results:
+                log.info("[api_leads] Возвращаем %d найденных лидов несмотря на ошибку", len(results))
+                break
             return None
 
         if page_num == 1:
@@ -531,9 +534,9 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             break
 
         for item in items:
-            # Client-side status filter (server-side filter may be ignored by Brizo)
-            item_status = item.get("status_id") or item.get("funnel_status_id")
-            if item_status is not None and str(item_status) != str(BASE_STATUS_ID):
+            # Status filter: table API returns flat key "status.name" (not status_id)
+            status_name = item.get("status.name")
+            if status_name is not None and status_name != "База":
                 continue
 
             name = (item.get("name") or item.get("title") or "").strip()
@@ -547,13 +550,16 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             if any(name.startswith(p) for p in SKIP_PREFIXES):
                 continue
 
-            members = item.get("members") or item.get("participants") or []
-            resp_ok = any(
-                RESPONSIBLE in (m.get("name") or m.get("user", {}).get("name") or "")
-                for m in members
-                if m.get("type") in ("responsible", "owner", None)
-            )
-            if not resp_ok:
+            # Responsible check: table API has flat "responsible.name" key
+            resp_name = item.get("responsible.name") or ""
+            members = item.get("members") or []
+            if not resp_name:
+                resp_name = next(
+                    (m.get("name", "") for m in members
+                     if m.get("is_responsible") or m.get("is_owner")),
+                    "",
+                )
+            if RESPONSIBLE not in resp_name:
                 continue
 
             if len(members) > 1:

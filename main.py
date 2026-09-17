@@ -395,12 +395,8 @@ def main() -> None:
                 route.continue_()
         page.route("**", _block_analytics)
 
-        # Second page for Checko search (shares the same browser; avoids nested playwright)
-        checko_page = context.new_page()
-
-        # Для Checko-страницы блокируем все тяжёлые ресурсы (картинки, CSS, шрифты).
-        # Нам нужны только HTML и XHR/fetch (автокомплит), поэтому лишние запросы
-        # к Checko.ru убираем — это снижает риск 429 в ~5-10 раз.
+        # Checko gets its own browser context, optionally with a proxy.
+        # On cloud servers (Railway) Checko blocks the server IP — proxy bypasses the block.
         def _block_checko_resources(route):
             resource_type = route.request.resource_type
             if resource_type in ("image", "stylesheet", "font", "media"):
@@ -411,6 +407,27 @@ def main() -> None:
             else:
                 route.continue_()
 
+        _checko_ctx_kwargs: dict = {
+            "user_agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "viewport": {"width": 1280, "height": 720},
+            "ignore_https_errors": True,
+        }
+        _pw_proxy = checko_module.get_pw_proxy()
+        if _pw_proxy:
+            _checko_ctx_kwargs["proxy"] = _pw_proxy
+            log.info("[0] Checko-браузер через прокси %s", _pw_proxy["server"][:60])
+        else:
+            log.info("[0] Checko-браузер без прокси (прокси не настроены)")
+
+        checko_ctx = browser.new_context(**_checko_ctx_kwargs)
+        checko_ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        checko_page = checko_ctx.new_page()
         checko_page.route("**", _block_checko_resources)
         checko_module.set_pw_page(checko_page)
 
