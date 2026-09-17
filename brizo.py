@@ -489,12 +489,19 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
     results: list[dict] = []
     page_num = 1
     per_page = 200
+    # Safety limit: even if server filter fails, Base deals (≈4634) are recent
+    # and appear in first ~25 pages; scanning 30 pages covers them all
+    MAX_PAGES = 30
 
-    while len(results) < max_leads:
+    while len(results) < max_leads and page_num <= MAX_PAGES:
         try:
             r = sess.get(
                 f"{BRIZO_URL}/api/funnels/21480/deals/table",
-                params={"status_id": BASE_STATUS_ID, "limit": per_page, "page": page_num},
+                params={
+                    "filter[status_id][]": BASE_STATUS_ID,
+                    "limit": per_page,
+                    "page": page_num,
+                },
                 timeout=20,
             )
             r.raise_for_status()
@@ -503,18 +510,28 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             log.warning("[api_leads] Запрос к API не удался: %s", e)
             return None
 
-        # Log structure on first page so we can diagnose format issues
         if page_num == 1:
-            log.info("[api_leads] HTTP %s  keys=%s  meta=%s",
-                     r.status_code, list(body.keys()), body.get("meta"))
+            meta = body.get("meta") or {}
+            overal = meta.get("overal_count", "?")
+            statuses = meta.get("count_by_statuses") or {}
+            base_info = statuses.get(str(BASE_STATUS_ID)) or {}
+            base_count = base_info.get("deals_count") or base_info.get("count") or "?"
+            log.info("[api_leads] HTTP %s  overal=%s  база=%s", r.status_code, overal, base_count)
+            items_sample = (body.get("data") or [])[:1]
+            if items_sample:
+                log.debug("[api_leads] item keys: %s", list(items_sample[0].keys()))
 
         items = body.get("data") or body.get("items") or body.get("deals") or []
         if not items:
-            log.info("[api_leads] Пустой ответ или другой ключ. Пробуем items ключи: %s",
-                     list(body.keys()))
+            log.info("[api_leads] Пустой ответ на стр.%d, ключи: %s", page_num, list(body.keys()))
             break
 
         for item in items:
+            # Client-side status filter — server-side filter[status_id][] may not work
+            item_status = item.get("status_id") or item.get("funnel_status_id")
+            if item_status is not None and str(item_status) != str(BASE_STATUS_ID):
+                continue
+
             name = (item.get("name") or item.get("title") or "").strip()
             if not name:
                 continue
@@ -554,7 +571,7 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             break
         page_num += 1
 
-    log.info("[api_leads] Найдено через API: %d лидов", len(results))
+    log.info("[api_leads] Найдено через API: %d лидов (стр. %d)", len(results), page_num)
     return results
 
 
