@@ -426,22 +426,36 @@ def _resolve_url(inn: str) -> str | None:
     2. Search page /search?query={INN} — curl UA, резервный HTTP-вариант.
     3. Direct /company/{INN} HEAD — редко работает, крайний резерв.
     """
+    def _search_in_html(html: str, url: str) -> str | None:
+        if "/company/" in url and "/search" not in url:
+            return url.split("?")[0].rstrip("/")
+        links = re.findall(r'href=["\'](/company/[^"\'?&]+)["\']', html)
+        company_links = [
+            l for l in links
+            if not any(x in l for x in ["/select", "/updates", "/edit", "/contacts",
+                                          "/details", "/finances", "/activity"])
+        ]
+        return (BASE_URL + company_links[0]) if company_links else None
+
+    search_url = f"{BASE_URL}/search?query={inn}"
+
     # 1. Playwright autocomplete (основной метод — браузер уже открыт)
     try:
         page = _get_pw_page()
         current_url = page.url or ""
-        # Если страница не на checko.ru или уже на странице компании — вернуться на главную
-        if not current_url.startswith(BASE_URL + "/") or "/company/" in current_url:
+        if not current_url.startswith(BASE_URL + "/") or "/company/" in current_url or "/search" in current_url:
             print(f"[checko] открываем Checko (текущий URL: {current_url[:60]})")
             page.goto(f"{BASE_URL}/", timeout=30_000, wait_until="domcontentloaded")
-            time.sleep(1.0)
+            time.sleep(1.5)
         else:
             time.sleep(0.3)
-        inp = page.query_selector('input[name="query"], input[type="search"]')
+
+        inp = page.query_selector('input[name="query"], input[type="search"], input[placeholder*="поиск" i], input[placeholder*="компани" i]')
+        print(f"[checko] autocomplete: input найден={inp is not None}  url={page.url[:60]}")
         if inp:
             inp.click()
             inp.fill("")
-            time.sleep(0.2)
+            time.sleep(0.3)
             inp.type(inn, delay=80)
             try:
                 page.wait_for_selector('.dropdown-menu.show a[href*="/company/"]', timeout=7_000)
@@ -468,32 +482,43 @@ def _resolve_url(inn: str) -> str | None:
     except Exception as e:
         print(f"[checko] autocomplete error для ИНН {inn}: {e}")
 
-    # 2. Браузерный поиск через page.request (cookies сессии, не навигация)
-    search_url = f"{BASE_URL}/search?query={inn}"
-    def _search_in_html(html: str, url: str) -> str | None:
-        if "/company/" in url and "/search" not in url:
-            return url.split("?")[0].rstrip("/")
-        links = re.findall(r'href=["\'](/company/[^"\'?&]+)["\']', html)
-        company_links = [
-            l for l in links
-            if not any(x in l for x in ["/select", "/updates", "/edit", "/contacts",
-                                          "/details", "/finances", "/activity"])
-        ]
-        return (BASE_URL + company_links[0]) if company_links else None
+    # 2. Навигация браузера к странице поиска (рендерит JS — результаты не статические)
+    try:
+        page = _get_pw_page()
+        print(f"[checko] goto поиска: {search_url}")
+        page.goto(search_url, timeout=25_000, wait_until="domcontentloaded")
+        time.sleep(2.5)
+        company_links = page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('a[href*="/company/"]'))
+                .filter(a => {
+                    const h = a.href || '';
+                    return !h.includes('/select') && !h.includes('/updates')
+                        && !h.includes('/edit') && !h.includes('/contacts')
+                        && !h.includes('/details') && !h.includes('/finances');
+                })
+                .map(a => a.href);
+        }""")
+        print(f"[checko] goto поиска: найдено ссылок={len(company_links)}  url={page.url[:80]}")
+        if company_links:
+            print(f"[checko] found via goto search for INN {inn}: {company_links[0]}")
+            return company_links[0]
+    except Exception as e:
+        print(f"[checko] goto search failed for INN {inn}: {e}")
 
-    # 2a. Браузерный запрос (cookies, не виден как бот)
+    # 3. Браузерный запрос (cookies, не навигация) — быстро, но без JS
     try:
         page = _get_pw_page()
         br = page.request.get(search_url, timeout=15_000)
         if br.ok:
             found = _search_in_html(br.text(), br.url)
             if found:
-                print(f"[checko] found via browser search for INN {inn}: {found}")
+                print(f"[checko] found via browser request for INN {inn}: {found}")
                 return found
+            print(f"[checko] browser request: ответ {br.status}, ссылок нет (html len={len(br.text())})")
     except Exception as e:
-        print(f"[checko] browser search failed for INN {inn}: {e}")
+        print(f"[checko] browser request failed for INN {inn}: {e}")
 
-    # 2b. curl UA (резервный HTTP)
+    # 4. curl UA (резервный HTTP)
     try:
         r = _CURL_SESSION.get(search_url, timeout=15, allow_redirects=True)
         if r.status_code == 200:
@@ -501,6 +526,9 @@ def _resolve_url(inn: str) -> str | None:
             if found:
                 print(f"[checko] found via curl search for INN {inn}: {found}")
                 return found
+            print(f"[checko] curl: ответ 200, ссылок нет (html len={len(r.text)})")
+        else:
+            print(f"[checko] curl: HTTP {r.status_code}")
     except Exception as e:
         print(f"[checko] curl search failed for INN {inn}: {e}")
 
