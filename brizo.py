@@ -489,11 +489,10 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
     results: list[dict] = []
     page_num = 1
     per_page = 200
-    # Safety limit: even if server filter fails, Base deals (≈4634) are recent
-    # and appear in first ~25 pages; scanning 30 pages covers them all
     MAX_PAGES = 30
 
     while len(results) < max_leads and page_num <= MAX_PAGES:
+        log.info("[api_leads] стр. %d/%d (найдено: %d)...", page_num, MAX_PAGES, len(results))
         try:
             r = sess.get(
                 f"{BRIZO_URL}/api/funnels/21480/deals/table",
@@ -516,18 +515,23 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             statuses = meta.get("count_by_statuses") or {}
             base_info = statuses.get(str(BASE_STATUS_ID)) or {}
             base_count = base_info.get("deals_count") or base_info.get("count") or "?"
-            log.info("[api_leads] HTTP %s  overal=%s  база=%s", r.status_code, overal, base_count)
+            log.info("[api_leads] HTTP %s  overal=%s  база=%s",
+                     r.status_code, overal, base_count)
             items_sample = (body.get("data") or [])[:1]
             if items_sample:
-                log.debug("[api_leads] item keys: %s", list(items_sample[0].keys()))
+                first = items_sample[0]
+                log.info("[api_leads] item keys: %s", list(first.keys()))
+                log.info("[api_leads] item sample: id=%s name=%s status_id=%s members=%s",
+                         first.get("id"), first.get("name", "")[:30],
+                         first.get("status_id"), first.get("members"))
 
         items = body.get("data") or body.get("items") or body.get("deals") or []
         if not items:
-            log.info("[api_leads] Пустой ответ на стр.%d, ключи: %s", page_num, list(body.keys()))
+            log.info("[api_leads] Пустой ответ на стр.%d", page_num)
             break
 
         for item in items:
-            # Client-side status filter — server-side filter[status_id][] may not work
+            # Client-side status filter (server-side filter may be ignored by Brizo)
             item_status = item.get("status_id") or item.get("funnel_status_id")
             if item_status is not None and str(item_status) != str(BASE_STATUS_ID):
                 continue
@@ -536,16 +540,13 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             if not name:
                 continue
 
-            # Filter: only legal entities
             first_word = name.split()[0]
             if first_word not in _LEGAL_PREFIXES:
                 continue
 
-            # Filter: skip prefixes
             if any(name.startswith(p) for p in SKIP_PREFIXES):
                 continue
 
-            # Filter: responsible must be RESPONSIBLE
             members = item.get("members") or item.get("participants") or []
             resp_ok = any(
                 RESPONSIBLE in (m.get("name") or m.get("user", {}).get("name") or "")
@@ -555,7 +556,6 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             if not resp_ok:
                 continue
 
-            # Filter: no other participants (total members == 1)
             if len(members) > 1:
                 continue
 
@@ -566,12 +566,12 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
                 if len(results) >= max_leads:
                     break
 
-        total = body.get("meta", {}).get("overal_count") or body.get("meta", {}).get("total") or 0
+        total = body.get("meta", {}).get("overal_count") or 0
         if not items or page_num * per_page >= total:
             break
         page_num += 1
 
-    log.info("[api_leads] Найдено через API: %d лидов (стр. %d)", len(results), page_num)
+    log.info("[api_leads] Итого найдено: %d лидов (просканировано стр: %d)", len(results), page_num)
     return results
 
 
