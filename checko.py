@@ -67,6 +67,18 @@ _proxy_idx: int = 0
 _PROXY_BLOCKED_UNTIL: dict[int, float] = {}   # index → time.time() когда разблокируется
 _PROXY_COOLDOWN_SEC = 8 * 60                   # 8 минут кулдаун после 429
 
+# Флаг «видели 429 в последнем _get()» — для вызывающего кода, которому
+# нужно среагировать на rate-limit своей собственной паузой (см. lead_generator.py).
+# Не влияет на поведение _get() — только фиксирует факт для внешнего наблюдателя.
+_last_429: bool = False
+
+
+def consume_429() -> bool:
+    """Вернуть True если с прошлого вызова был замечен 429, и сбросить флаг."""
+    global _last_429
+    seen, _last_429 = _last_429, False
+    return seen
+
 
 def _load_proxies() -> None:
     """Load proxy list from proxies.txt or PROXY_URL env var."""
@@ -331,6 +343,8 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
         if resp.status_code == 200:
             return resp
         if resp.status_code == 429:
+            global _last_429
+            _last_429 = True
             print(f"[checko] curl UA 429 на {url} — пробуем SESSION")
         # Для других кодов ошибок тоже пробуем через SESSION
     except Exception as e:
@@ -361,6 +375,7 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
                     _remove_proxy()
 
             if resp.status_code == 429:
+                _last_429 = True
                 print(f"[checko] 429 на {url} (попытка {attempt}/{retries})")
                 rotate_proxy()
                 if attempt < retries:
@@ -692,30 +707,55 @@ def _parse_company_page(text: str, company_url: str) -> dict:
     return data
 
 
+_SKIP_DOMAINS = (
+    "checko.ru", "chrome.google.com", "google.com",
+    "vk.com", "facebook.com", "instagram.com", "t.me",
+    "youtube.com", "yandex.ru", "gosuslugi.ru", "egrul.nalog.ru",
+    "kad.arbitr.ru", "nalog.ru", "trudvsem.ru", "fedresurs.ru",
+    "arbitr.ru", "rnp.fas.gov.ru", "zakupki.gov.ru", "rosreestr.ru",
+    "pfr.gov.ru", "fss.ru", "rosstat.gov.ru", "economy.gov.ru",
+    "sbis.ru", "rusprofile.ru", "spark-interfax.ru", "list-org.com",
+    "rospotrebnadzor.ru", "fssp.gov.ru", "rkn.gov.ru",
+    "fips.ru",
+)
+
+
+def _extract_url_from_href(href: str) -> str:
+    """Resolve direct and redirect-style hrefs to a company website URL."""
+    if href.startswith("http"):
+        return href
+    # Checko sometimes wraps external links: /ext?url=https://... or /link?url=...
+    if "url=" in href:
+        from urllib.parse import urlparse, parse_qs
+        try:
+            qs = parse_qs(urlparse(href).query)
+            candidate = (qs.get("url") or qs.get("href") or [""])[0]
+            if candidate.startswith("http"):
+                return candidate
+        except Exception:
+            pass
+    return ""
+
+
 def _find_website_in_html(html: str) -> str:
-    """Extract company website from raw HTML (more reliable than text scan)."""
-    _SKIP_DOMAINS = (
-        "checko.ru", "chrome.google.com", "google.com",
-        "vk.com", "facebook.com", "instagram.com", "t.me",
-        "youtube.com", "yandex.ru", "gosuslugi.ru", "egrul.nalog.ru",
-        "kad.arbitr.ru", "nalog.ru", "trudvsem.ru", "fedresurs.ru",
-        "arbitr.ru", "rnp.fas.gov.ru", "zakupki.gov.ru", "rosreestr.ru",
-        "pfr.gov.ru", "fss.ru", "rosstat.gov.ru", "economy.gov.ru",
-        "sbis.ru", "rusprofile.ru", "spark-interfax.ru", "list-org.com",
-        "rospotrebnadzor.ru", "fssp.gov.ru", "rkn.gov.ru",
-        "fips.ru",  # patent office — not company site
-    )
+    """Extract company website from raw HTML."""
     soup = BeautifulSoup(html, "html.parser")
-    # Only look at <a> tags inside the Contacts section
-    contacts_section = soup.find(
-        lambda t: t.name and "контакт" in (t.get_text(strip=True) or "").lower()
-        and t.name in ("section", "div", "article", "h2", "h3")
-    )
-    scope = contacts_section.parent if contacts_section else soup
-    for a in scope.find_all("a", href=True):
-        href = a["href"]
-        if href.startswith("http") and not any(d in href for d in _SKIP_DOMAINS):
-            return href
+
+    # Try contacts section first (more precise)
+    contacts_section = None
+    for tag in soup.find_all(["section", "div", "article", "h2", "h3"]):
+        txt = (tag.get_text(strip=True) or "").lower()
+        if "контакт" in txt and len(txt) < 200:
+            contacts_section = tag
+            break
+
+    # Search inside contacts section, then fall back to whole page
+    scopes = [contacts_section, soup] if contacts_section else [soup]
+    for scope in scopes:
+        for a in scope.find_all("a", href=True):
+            url = _extract_url_from_href(a["href"])
+            if url and not any(d in url for d in _SKIP_DOMAINS):
+                return url
     return ""
 
 
@@ -894,6 +934,18 @@ def get_company_data_from_url(url: str, inn: str = "", fetch_taxes: bool = True)
     data = _parse_company_page(text, url)
     data["website"] = _find_website_in_html(resp.text) or data["website"]
     data["emails"]  = _find_emails_in_html(resp.text)
+
+    # If main page has no website/emails — try the /contacts subpage
+    if not data["website"] and not data["emails"]:
+        print(f"[checko] Сайт/почта не найдены на главной — пробуем /contacts")
+        site, emails = _fetch_contacts_section(url)
+        if site:
+            data["website"] = site
+        if emails:
+            data["emails"] = emails
+
+    print(f"[checko] Итог: сайт={data['website']!r}  почты={data['emails']}")
+
     # Use provided INN only if given; otherwise keep what _parse_company_page extracted
     if inn:
         data["inn"] = inn
@@ -942,13 +994,37 @@ def enrich_with_taxes(data: dict, url: str) -> None:
         print("[checko] taxes/data: не удалось получить — данные налога на прибыль сброшены (компания не квалифицируется)")
 
 
+def _fetch_contacts_section(company_url: str) -> tuple[str, list[str]]:
+    """
+    Fetch the /contacts subpage of a Checko company page and extract website + emails.
+    Returns (website, emails_list). Uses the browser session (cookies intact).
+    """
+    contacts_url = company_url.rstrip("/") + "/contacts"
+    print(f"[checko] Контакты: запрашиваем {contacts_url}")
+    try:
+        page = _get_pw_page()
+        br = page.request.get(contacts_url, headers={"Referer": company_url}, timeout=20_000)
+        if not br.ok:
+            print(f"[checko] Контакты: HTTP {br.status} — пропускаем")
+            return "", []
+        html = br.text()
+    except Exception as e:
+        print(f"[checko] Контакты: ошибка запроса — {e}")
+        return "", []
+
+    website = _find_website_in_html(html)
+    emails  = _find_emails_in_html(html)
+    print(f"[checko] Контакты: сайт={website!r}  почты={emails}")
+    return website, emails
+
+
 def get_company_data(inn: str) -> dict:
     """
     Fetch and return enriched company data from checko.ru for the given INN.
 
     Keys in returned dict:
         checko_url, revenue, taxes_total, income_tax_exists, income_tax_amount,
-        director_name, director_inn, founders (list), website, inn
+        director_name, director_inn, founders (list), website, emails, inn
     """
     inn = inn.strip()
     if not inn:
@@ -972,10 +1048,20 @@ def get_company_data(inn: str) -> dict:
     text = BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
     data = _parse_company_page(text, company_url)
 
-    # Override website with HTML-based extraction (more reliable)
     data["website"] = _find_website_in_html(resp.text) or data["website"]
+    data["emails"]  = _find_emails_in_html(resp.text)
+    data["inn"]     = inn
 
-    data["inn"] = inn
+    # If main page has no website/emails — try the /contacts subpage
+    if not data["website"] and not data["emails"]:
+        print(f"[checko] Сайт/почта не найдены на главной — пробуем /contacts")
+        site, emails = _fetch_contacts_section(company_url)
+        if site:
+            data["website"] = site
+        if emails:
+            data["emails"] = emails
+
+    print(f"[checko] Итог: сайт={data['website']!r}  почты={data['emails']}")
     return data
 
 

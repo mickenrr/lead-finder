@@ -26,6 +26,7 @@ from brizo import (
     move_to_stage,
     reject_lead,
     fill_checko_field,
+    fill_contact_details,
     add_comment,
     add_contact,
     add_lpr_contacts,
@@ -169,22 +170,49 @@ def process_lead(page, lead: dict, stats: dict) -> tuple[str, str]:
     log.info("  ИНН компании: %s", inn)
 
     # ── c. Проверить поле «Сайт» и «Корпоративная почта» ────────────────
-    # Отклоняем «Нет КД» только если НЕ заполнено ни сайт, ни почта.
-    # Если есть хотя бы одно из двух — продолжаем.
+    # Если в Brizo есть хотя бы одно из двух — продолжаем как раньше.
+    # Если оба пустые — идём на Чекко искать сайт/почту:
+    #   - нашли → записываем в Brizo, продолжаем обработку
+    #   - не нашли → отклоняем «Нет КД»
     deal_website = details.get("website_field", "").strip()
     deal_email   = details.get("email_field", "").strip()
+    existing_checko = details.get("checko_url_field", "").strip()
+
+    _company_prefetch = None   # будет заполнен ниже, чтобы шаг d не дублировал запрос
+
     if not deal_website and not deal_email:
-        log.info("  Нет ни сайта, ни почты → Проиграно 'Нет КД'")
-        _pause()
-        reject_lead(page, lead_id, REASON_NO_WEBSITE)
-        stats["rejected"][REASON_NO_WEBSITE] += 1
-        return ("rejected", REASON_NO_WEBSITE)
+        log.info("  Нет сайта/почты в Brizo — ищем на Чекко...")
+        if existing_checko:
+            _company_prefetch = checko_module.get_company_data_from_url(existing_checko, inn)
+        else:
+            _company_prefetch = get_company_data(inn)
+
+        if not _company_prefetch:
+            log.warning("  Чекко не ответил при поиске сайта — оставляем в База")
+            stats["errors"] += 1
+            return ("error", "Не найден в Чекко")
+
+        checko_website = (_company_prefetch.get("website") or "").strip()
+        checko_emails  = _company_prefetch.get("emails") or []
+        checko_email   = checko_emails[0].strip() if checko_emails else ""
+
+        if checko_website or checko_email:
+            log.info("  Нашли на Чекко: сайт=%s  почта=%s", checko_website, checko_email)
+            fill_contact_details(lead_id, checko_website, checko_email)
+            deal_website = checko_website
+            deal_email   = checko_email
+        else:
+            log.info("  На Чекко тоже нет сайта/почты → Проиграно 'Нет КД'")
+            _pause()
+            reject_lead(page, lead_id, REASON_NO_WEBSITE)
+            stats["rejected"][REASON_NO_WEBSITE] += 1
+            return ("rejected", REASON_NO_WEBSITE)
 
     # ── d. Получить данные из Чекко ──────────────────────────────────────
-    # Сначала проверяем, есть ли уже ссылка на Чекко в карточке
-    existing_checko = details.get("checko_url_field", "").strip()
     log.info("  [d] Запрашиваем Чекко для ИНН %s", inn)
-    if existing_checko:
+    if _company_prefetch:
+        company = _company_prefetch   # уже загружено в шаге c — не дублируем запрос
+    elif existing_checko:
         company = checko_module.get_company_data_from_url(existing_checko, inn)
     else:
         company = get_company_data(inn)
@@ -336,6 +364,13 @@ def main() -> None:
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-blink-features=AutomationControlled",
+                # Required in Docker: /dev/shm is 64MB by default, Chrome crashes without this
+                "--disable-dev-shm-usage",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--metrics-recording-only",
+                "--mute-audio",
             ],
         )
         context = browser.new_context(
