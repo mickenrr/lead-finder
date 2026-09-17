@@ -423,24 +423,43 @@ def main() -> None:
         else:
             log.info("[0] Checko-браузер без прокси (прокси не настроены)")
 
-        checko_ctx = browser.new_context(**_checko_ctx_kwargs)
-        checko_ctx.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-        checko_page = checko_ctx.new_page()
-        checko_page.route("**", _block_checko_resources)
+        def _make_checko_page(with_proxy: bool) -> object:
+            kw = dict(_checko_ctx_kwargs)
+            if with_proxy and _pw_proxy:
+                kw["proxy"] = _pw_proxy
+            elif "proxy" in kw:
+                del kw["proxy"]
+            ctx = browser.new_context(**kw)
+            ctx.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            pg = ctx.new_page()
+            pg.route("**", _block_checko_resources)
+            return pg
+
+        checko_page = _make_checko_page(with_proxy=bool(_pw_proxy))
         checko_module.set_pw_page(checko_page)
 
         # Открываем Checko в браузере ОДИН РАЗ при старте.
-        # Это строит сессию (cookies) — дальнейшие поиски идут через строку поиска
-        # уже на открытой странице, без повторной загрузки сайта.
         try:
             log.info("[0] Открываем Checko в браузере...")
             checko_page.goto("https://checko.ru/", timeout=30_000, wait_until="domcontentloaded")
             time.sleep(2)
             log.info("[0] Checko открыт")
         except Exception as _ce:
-            log.warning("[0] Не удалось открыть Checko: %s — продолжаем", _ce)
+            _ce_str = str(_ce)
+            if _pw_proxy and "PROXY" in _ce_str.upper():
+                log.warning("[0] Прокси недоступен (%s) — переключаемся на прямое соединение", _ce_str[:80])
+                checko_page = _make_checko_page(with_proxy=False)
+                checko_module.set_pw_page(checko_page)
+                try:
+                    checko_page.goto("https://checko.ru/", timeout=30_000, wait_until="domcontentloaded")
+                    time.sleep(2)
+                    log.info("[0] Checko открыт (без прокси)")
+                except Exception as _ce2:
+                    log.warning("[0] Не удалось открыть Checko: %s — продолжаем", _ce2)
+            else:
+                log.warning("[0] Не удалось открыть Checko: %s — продолжаем", _ce)
 
         try:
             # ── Шаг 3: войти в Brizo ─────────────────────────────────────

@@ -524,9 +524,10 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             if items_sample:
                 first = items_sample[0]
                 log.info("[api_leads] item keys: %s", list(first.keys()))
-                log.info("[api_leads] item sample: id=%s name=%s status_id=%s members=%s",
+                log.info("[api_leads] item sample: id=%s name=%s status.name=%r responsible.name=%r members_count=%s",
                          first.get("id"), first.get("name", "")[:30],
-                         first.get("status_id"), first.get("members"))
+                         first.get("status.name"), first.get("responsible.name"),
+                         len(first.get("members") or []))
 
         items = body.get("data") or body.get("items") or body.get("deals") or []
         if not items:
@@ -534,11 +535,6 @@ def _get_base_leads_via_api(max_leads: int = 9999) -> list[dict] | None:
             break
 
         for item in items:
-            # Status filter: table API returns flat key "status.name" (not status_id)
-            status_name = item.get("status.name")
-            if status_name is not None and status_name != "База":
-                continue
-
             name = (item.get("name") or item.get("title") or "").strip()
             if not name:
                 continue
