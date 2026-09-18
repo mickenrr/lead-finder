@@ -66,6 +66,7 @@ _PROXIES: list[dict] = []
 _proxy_idx: int = 0
 _PROXY_BLOCKED_UNTIL: dict[int, float] = {}   # index → time.time() когда разблокируется
 _PROXY_COOLDOWN_SEC = 8 * 60                   # 8 минут кулдаун после 429
+_use_proxy_mode: bool = False                  # False = прямое соединение; True = прокси (включается при 429)
 
 # Флаг «видели 429 в последнем _get()» — для вызывающего кода, которому
 # нужно среагировать на rate-limit своей собственной паузой (см. lead_generator.py).
@@ -357,10 +358,14 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
         else:
             referer = BASE_URL + "/"
 
+    global _use_proxy_mode
     headers = {"Referer": referer, "Sec-Fetch-Site": "same-origin"}
     for attempt in range(1, retries + 1):
         try:
-            p = _proxy()
+            # Первая попытка — прямое соединение без прокси.
+            # Прокси подключается только если получили 429.
+            use_proxy = _use_proxy_mode and _PROXIES
+            p = _proxy() if use_proxy else None
             use_socks5 = _is_socks5(p)
             if use_socks5:
                 _apply_proxy()
@@ -376,7 +381,8 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
 
             if resp.status_code == 429:
                 _last_429 = True
-                print(f"[checko] 429 на {url} (попытка {attempt}/{retries})")
+                _use_proxy_mode = True  # теперь переключаемся на прокси
+                print(f"[checko] 429 на {url} (попытка {attempt}/{retries}) — включаем прокси")
                 rotate_proxy()
                 if attempt < retries:
                     time.sleep(random.uniform(2, 4))
@@ -386,7 +392,8 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
             return resp
         except requests.RequestException as e:
             print(f"[checko] GET {url} attempt {attempt}/{retries} failed: {e}")
-            rotate_proxy()
+            if _use_proxy_mode:
+                rotate_proxy()
             if attempt < retries:
                 time.sleep(3 * attempt)
 

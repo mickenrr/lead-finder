@@ -417,11 +417,7 @@ def main() -> None:
             "ignore_https_errors": True,
         }
         _pw_proxy = checko_module.get_pw_proxy()
-        if _pw_proxy:
-            _checko_ctx_kwargs["proxy"] = _pw_proxy
-            log.info("[0] Checko-браузер через прокси %s", _pw_proxy["server"][:60])
-        else:
-            log.info("[0] Checko-браузер без прокси (прокси не настроены)")
+        log.info("[0] Checko-браузер: прямое соединение (прокси подключится при 429)")
 
         def _make_checko_page(with_proxy: bool) -> object:
             kw = dict(_checko_ctx_kwargs)
@@ -437,7 +433,8 @@ def main() -> None:
             pg.route("**", _block_checko_resources)
             return pg
 
-        checko_page = _make_checko_page(with_proxy=bool(_pw_proxy))
+        # Всегда стартуем БЕЗ прокси — прокси подключается только при 429
+        checko_page = _make_checko_page(with_proxy=False)
         checko_module.set_pw_page(checko_page)
 
         # Открываем Checko в браузере ОДИН РАЗ при старте.
