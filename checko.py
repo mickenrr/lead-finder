@@ -66,7 +66,8 @@ _PROXIES: list[dict] = []
 _proxy_idx: int = 0
 _PROXY_BLOCKED_UNTIL: dict[int, float] = {}   # index → time.time() когда разблокируется
 _PROXY_COOLDOWN_SEC = 8 * 60                   # 8 минут кулдаун после 429
-_use_proxy_mode: bool = False                  # False = прямое соединение; True = прокси (включается при 429)
+# CHECKO_FORCE_PROXY=1 → всегда через прокси (нужно для Railway где прямой IP заблокирован)
+_use_proxy_mode: bool = os.getenv("CHECKO_FORCE_PROXY", "").strip() in ("1", "true", "yes")
 
 # Флаг «видели 429 в последнем _get()» — для вызывающего кода, которому
 # нужно среагировать на rate-limit своей собственной паузой (см. lead_generator.py).
