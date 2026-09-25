@@ -470,21 +470,105 @@ body{
   transition:all .15s;
 }
 .scroll-toggle:hover{color:var(--text);border-color:var(--faint)}
+
+/* ── Captcha modal ── */
+.modal-overlay{
+  display:none;position:fixed;inset:0;
+  background:rgba(0,0,0,.72);
+  z-index:2000;
+  align-items:center;justify-content:center;
+  padding:24px;
+}
+.modal-overlay.visible{display:flex}
+.modal-card{
+  background:#fff;
+  color:#1a2540;
+  border-radius:20px;
+  padding:40px 44px;
+  max-width:520px;
+  width:100%;
+  box-shadow:0 32px 80px rgba(0,0,0,.45);
+  text-align:center;
+  position:relative;
+}
+@media(prefers-color-scheme:dark){
+  .modal-card{background:#1c2640;color:#c8d6f0}
+  .modal-steps{background:#131b2e}
+  .modal-step-num{color:#3d8ef8}
+}
+.modal-icon{font-size:56px;line-height:1;margin-bottom:16px}
+.modal-title{
+  font-size:20px;font-weight:800;
+  color:#d97706;
+  margin-bottom:10px;letter-spacing:-.2px;
+}
+.modal-subtitle{
+  font-size:14px;line-height:1.6;
+  color:#5a6e96;
+  margin-bottom:24px;
+}
+.modal-steps{
+  background:#f5f8ff;
+  border-radius:12px;
+  padding:18px 22px;
+  margin-bottom:28px;
+  text-align:left;
+}
+.modal-step{
+  display:flex;align-items:flex-start;gap:12px;
+  font-size:14px;line-height:1.6;
+  color:#1a2540;
+}
+.modal-step + .modal-step{margin-top:10px}
+.modal-step-num{
+  font-size:13px;font-weight:800;
+  color:#2563eb;
+  background:rgba(37,99,235,.1);
+  border-radius:50%;
+  width:24px;height:24px;
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;margin-top:1px;
+}
+.modal-step-txt strong{color:#1a2540}
+.modal-btn{
+  display:inline-flex;align-items:center;gap:8px;
+  background:#16a34a;color:#fff;
+  border:none;border-radius:10px;
+  padding:14px 36px;
+  font-size:15px;font-weight:700;
+  cursor:pointer;
+  transition:background .15s,transform .1s;
+  letter-spacing:.01em;
+}
+.modal-btn:hover{background:#15803d;transform:translateY(-1px)}
+.modal-btn:active{transform:translateY(0)}
 </style>
 </head>
 <body>
 
-<!-- Captcha overlay -->
-<div id="captchaOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;align-items:center;justify-content:center;">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:40px 44px;max-width:520px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
-    <div style="font-size:52px;margin-bottom:12px">⚠️</div>
-    <h2 style="font-size:18px;font-weight:700;margin-bottom:16px;color:var(--yellow)">Checko просит пройти капчу!</h2>
-    <div style="text-align:left;background:var(--surface2);border-radius:10px;padding:16px 20px;margin-bottom:24px;font-size:14px;line-height:1.8;color:var(--text);">
-      <div style="margin-bottom:6px"><span style="font-weight:700;color:var(--accent)">1.</span> Откройте <strong>checko.ru</strong> в вашем браузере</div>
-      <div style="margin-bottom:6px"><span style="font-weight:700;color:var(--accent)">2.</span> Нажмите галочку <strong>«Я не робот»</strong> и <strong>«Подтвердить»</strong></div>
-      <div><span style="font-weight:700;color:var(--accent)">3.</span> Вернитесь сюда и нажмите <strong>ПРОДОЛЖИТЬ</strong></div>
+<!-- Captcha modal -->
+<div id="captchaOverlay" class="modal-overlay" onclick="return false">
+  <div class="modal-card">
+    <div class="modal-icon">⚠️</div>
+    <div class="modal-title">Требуется действие</div>
+    <div class="modal-subtitle">
+      Checko обнаружил подозрительную активность и просит<br>подтвердить, что вы человек.
     </div>
-    <button onclick="resumeAfterCaptcha()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:12px 32px;font-size:15px;font-weight:700;cursor:pointer;transition:background .15s;" onmouseover="this.style.background='var(--accent-h)'" onmouseout="this.style.background='var(--accent)'">▶ ПРОДОЛЖИТЬ</button>
+    <div class="modal-steps">
+      <div class="modal-step">
+        <div class="modal-step-num">1</div>
+        <div class="modal-step-txt">Откройте <strong>checko.ru</strong> в браузере</div>
+      </div>
+      <div class="modal-step">
+        <div class="modal-step-num">2</div>
+        <div class="modal-step-txt">Нажмите галочку <strong>«Я не робот»</strong> и кнопку <strong>«Подтвердить»</strong></div>
+      </div>
+      <div class="modal-step">
+        <div class="modal-step-num">3</div>
+        <div class="modal-step-txt">Вернитесь сюда и нажмите кнопку ниже</div>
+      </div>
+    </div>
+    <button class="modal-btn" onclick="resumeAfterCaptcha()">✅ Я прошёл капчу — продолжить</button>
   </div>
 </div>
 
@@ -737,13 +821,12 @@ es.addEventListener('pipeline', function(e) {
   if (evt.type === 'captcha_detected') {
     isPaused = true;
     _updateControls();
-    const overlay = document.getElementById('captchaOverlay');
-    overlay.style.display = 'flex';
+    document.getElementById('captchaOverlay').classList.add('visible');
   }
 });
 
 async function resumeAfterCaptcha() {
-  document.getElementById('captchaOverlay').style.display = 'none';
+  document.getElementById('captchaOverlay').classList.remove('visible');
   const r = await fetch(`/resume/${RUN_ID}`, {method: 'POST'});
   const d = await r.json();
   isPaused = d.paused;
