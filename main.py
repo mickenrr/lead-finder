@@ -237,7 +237,8 @@ def process_lead(page, lead: dict, stats: dict) -> tuple[str, str]:
 
         checko_website = (_company_prefetch.get("website") or "").strip()
         checko_emails  = _company_prefetch.get("emails") or []
-        checko_email   = checko_emails[0].strip() if checko_emails else ""
+        # Сохраняем ВСЕ почты через запятую — чтобы шаг c.5 проверил каждую
+        checko_email   = ", ".join(e.strip() for e in checko_emails if e.strip())
 
         if checko_website or checko_email:
             log.info("  Нашли на Чекко: сайт=%s  почта=%s", checko_website, checko_email)
@@ -251,43 +252,25 @@ def process_lead(page, lead: dict, stats: dict) -> tuple[str, str]:
             stats["rejected"][REASON_NO_WEBSITE] += 1
             return ("rejected", REASON_NO_WEBSITE)
 
-    # ── c.5. Если сайта нет, но есть почта — проверяем домен ────────────────
-    # Бесплатная почта (mail.ru, gmail.com и т.п.) не считается КД.
-    # Корпоративная почта → пробуем открыть https://{домен}:
-    #   открылся (200 + >500 символов) → записываем как сайт, продолжаем
-    #   не открылся                    → Нет КД
+    # ── c.5. Если сайта нет, но есть почта — проверяем домены всех почт ────
+    # Перебираем ВСЕ почты (поле может содержать несколько через запятую).
+    # Если хотя бы одна почта корпоративная (домен не в списке бесплатных) —
+    # лид продолжает обработку (сайт не проверяем — почта сама по себе КД).
+    # Если все почты бесплатные — Нет КД.
     if not deal_website and deal_email:
-        if not is_corporate_email(deal_email):
-            log.info("  Почта бесплатная (%s) — КД нет → Проиграно 'Нет КД'", deal_email)
+        all_emails = [e.strip() for e in deal_email.replace(";", ",").split(",")
+                      if e.strip() and "@" in e]
+        corporate_emails = [e for e in all_emails if is_corporate_email(e)]
+
+        if not corporate_emails:
+            log.info("  Все почты бесплатные (%s) → Проиграно 'Нет КД'", deal_email)
             _pause()
             reject_lead(page, lead_id, REASON_NO_WEBSITE)
             stats["rejected"][REASON_NO_WEBSITE] += 1
             return ("rejected", REASON_NO_WEBSITE)
 
-        try:
-            domain = deal_email.strip().lower().split("@")[1]
-        except IndexError:
-            domain = ""
-
-        if domain:
-            log.info("  Нет сайта, корпоративная почта %s — проверяем домен %s", deal_email, domain)
-            site_url = _check_domain_site(domain)
-            if site_url:
-                log.info("  Сайт по домену найден: %s — записываем в Brizo", site_url)
-                fill_contact_details(lead_id, website=site_url)
-                deal_website = site_url
-            else:
-                log.info("  Домен %s не открылся → Проиграно 'Нет КД'", domain)
-                _pause()
-                reject_lead(page, lead_id, REASON_NO_WEBSITE)
-                stats["rejected"][REASON_NO_WEBSITE] += 1
-                return ("rejected", REASON_NO_WEBSITE)
-        else:
-            log.info("  Невалидная почта (%s), домен не определён → Нет КД", deal_email)
-            _pause()
-            reject_lead(page, lead_id, REASON_NO_WEBSITE)
-            stats["rejected"][REASON_NO_WEBSITE] += 1
-            return ("rejected", REASON_NO_WEBSITE)
+        log.info("  Корпоративная почта найдена: %s — продолжаем обработку",
+                 corporate_emails[0])
 
     # ── d. Получить данные из Чекко ──────────────────────────────────────
     log.info("  [d] Запрашиваем Чекко для ИНН %s", inn)
