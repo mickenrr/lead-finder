@@ -5,6 +5,7 @@ import json as _json
 import logging
 import os
 import random
+import signal
 import sys
 import time
 from collections import defaultdict
@@ -39,6 +40,11 @@ from checko import get_company_data, get_lpr_contacts, get_timezone_comment
 from qualifier import qualify_company, check_okved_skolkovo
 
 load_dotenv()
+
+
+class CaptchaDetected(Exception):
+    """Raised when Checko returns 429 / blocks the request (captcha required)."""
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -219,6 +225,8 @@ def process_lead(page, lead: dict, stats: dict) -> tuple[str, str]:
         company = get_company_data(inn)
 
     if not company:
+        if checko_module.was_request_blocked():
+            raise CaptchaDetected(inn)
         log.warning("  Компания не найдена в Чекко — оставляем в База")
         add_comment(page, lead_id, f"⚠️ Не найдено в Чекко для ИНН {inn}.")
         stats["errors"] += 1
@@ -486,12 +494,26 @@ def main() -> None:
 
             # ── Шаг 5: обрабатываем каждый лид ───────────────────────────
             log.info("[3] Начинаем обработку")
-            for i, lead in enumerate(leads, 1):
+            i = 0
+            while i < len(leads):
+                lead = leads[i]
+                lead_num = i + 1
                 lead_name = lead.get("name", f"Lead {lead.get('id')}")
-                _emit("lead_start", num=i, total=total_leads, name=lead_name)
+                _emit("lead_start", num=lead_num, total=total_leads, name=lead_name)
                 status, reason = "error", "Ошибка"
+                captcha_hit = False
                 try:
                     status, reason = process_lead(page, lead, stats)
+                    i += 1
+                except CaptchaDetected:
+                    captcha_hit = True
+                    log.warning("  КАПЧА/БЛОКИРОВКА Checko — ставим парсер на паузу")
+                    _emit("captcha_detected", lead_name=lead_name)
+                    os.kill(os.getpid(), signal.SIGSTOP)
+                    # Возобновились после SIGCONT пользователем
+                    log.info("  Возобновили работу — ждём 30 сек перед повтором лида")
+                    time.sleep(30)
+                    # Не увеличиваем i — повторяем тот же лид
                 except PlaywrightTimeout as exc:
                     log.error(
                         "Playwright timeout для лида %s: %s",
@@ -499,6 +521,7 @@ def main() -> None:
                     )
                     stats["errors"] += 1
                     status, reason = "error", "Timeout"
+                    i += 1
                 except Exception as exc:
                     log.error(
                         "Неожиданная ошибка для лида %s: %s",
@@ -507,11 +530,13 @@ def main() -> None:
                     )
                     stats["errors"] += 1
                     status, reason = "error", "Ошибка"
+                    i += 1
                 finally:
-                    _emit("lead_done", num=i, status=status, name=lead_name, reason=reason,
-                          qualified=stats["qualified"],
-                          rejected=sum(stats["rejected"].values()),
-                          errors=stats["errors"])
+                    if not captcha_hit:
+                        _emit("lead_done", num=lead_num, status=status, name=lead_name, reason=reason,
+                              qualified=stats["qualified"],
+                              rejected=sum(stats["rejected"].values()),
+                              errors=stats["errors"])
                     _pause(1.5, 2.5)
 
         except Exception as exc:

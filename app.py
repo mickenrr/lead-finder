@@ -302,12 +302,12 @@ RUN_HTML = r"""<!doctype html>
 :root{
   --bg:#0c1220;--surface:#131b2e;--surface2:#0e1525;--border:#1e2d4a;
   --text:#c8d6f0;--muted:#5a6e96;--faint:#3a4e72;
-  --accent:#3d8ef8;--green:#22d49a;--red:#f05252;--yellow:#f5a623;--gray:#3a4e72;
+  --accent:#3d8ef8;--accent-h:#2979e8;--green:#22d49a;--red:#f05252;--yellow:#f5a623;--gray:#3a4e72;
 }
 @media(prefers-color-scheme:light){:root{
   --bg:#eef2fb;--surface:#fff;--surface2:#f5f8ff;--border:#d5e0f5;
   --text:#1a2540;--muted:#6b7ea8;--faint:#c0cce8;
-  --accent:#2563eb;--green:#16a34a;--red:#dc2626;--yellow:#d97706;--gray:#94a3b8;
+  --accent:#2563eb;--accent-h:#1d4ed8;--green:#16a34a;--red:#dc2626;--yellow:#d97706;--gray:#94a3b8;
 }}
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -473,6 +473,19 @@ body{
 </style>
 </head>
 <body>
+
+<!-- Captcha overlay -->
+<div id="captchaOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:40px 44px;max-width:500px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
+    <div style="font-size:52px;margin-bottom:12px">⚠️</div>
+    <h2 style="font-size:18px;font-weight:700;margin-bottom:14px;color:var(--yellow)">На Чекко требуется пройти капчу</h2>
+    <p style="font-size:14px;line-height:1.6;color:var(--text);margin-bottom:24px">
+      Откройте вручную <strong>checko.ru</strong> в браузере и пройдите проверку.<br>
+      После этого вернитесь в парсер и нажмите <strong>ПРОДОЛЖИТЬ</strong>.
+    </p>
+    <button onclick="resumeAfterCaptcha()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:12px 32px;font-size:15px;font-weight:700;cursor:pointer;transition:background .15s;" onmouseover="this.style.background='var(--accent-h)'" onmouseout="this.style.background='var(--accent)'">▶ ПРОДОЛЖИТЬ</button>
+  </div>
+</div>
 
 <!-- Header -->
 <div class="hdr">
@@ -719,7 +732,22 @@ es.addEventListener('pipeline', function(e) {
     updateLeadCard(evt.num, evt.status, evt.reason);
     updateStats(evt.qualified, evt.rejected, evt.errors);
   }
+
+  if (evt.type === 'captcha_detected') {
+    isPaused = true;
+    _updateControls();
+    const overlay = document.getElementById('captchaOverlay');
+    overlay.style.display = 'flex';
+  }
 });
+
+async function resumeAfterCaptcha() {
+  document.getElementById('captchaOverlay').style.display = 'none';
+  const r = await fetch(`/resume/${RUN_ID}`, {method: 'POST'});
+  const d = await r.json();
+  isPaused = d.paused;
+  _updateControls();
+}
 
 es.addEventListener('done', function(e) {
   es.close();

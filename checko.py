@@ -74,12 +74,21 @@ _use_proxy_mode: bool = os.getenv("CHECKO_FORCE_PROXY", "").strip() in ("1", "tr
 # Не влияет на поведение _get() — только фиксирует факт для внешнего наблюдателя.
 _last_429: bool = False
 
+# Флаг «Checko заблокировал запрос» — True когда _get() вернул None из-за 429,
+# а не просто потому что компания не найдена. Сбрасывается в get_company_data().
+_request_blocked: bool = False
+
 
 def consume_429() -> bool:
     """Вернуть True если с прошлого вызова был замечен 429, и сбросить флаг."""
     global _last_429
     seen, _last_429 = _last_429, False
     return seen
+
+
+def was_request_blocked() -> bool:
+    """Вернуть True если последний get_company_data() завершился блокировкой (429)."""
+    return _request_blocked
 
 
 def _load_proxies() -> None:
@@ -340,6 +349,7 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
     2. Chrome UA (SESSION) с прокси-ротацией — если первый вариант не работает.
     """
     # ── Попытка 1: curl UA, прямой запрос (работает даже при банах на Chrome UA) ──
+    _saw_429 = False
     try:
         resp = _CURL_SESSION.get(url, timeout=20, allow_redirects=True)
         if resp.status_code == 200:
@@ -347,6 +357,7 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
         if resp.status_code == 429:
             global _last_429
             _last_429 = True
+            _saw_429 = True
             print(f"[checko] curl UA 429 на {url} — пробуем SESSION")
         # Для других кодов ошибок тоже пробуем через SESSION
     except Exception as e:
@@ -359,7 +370,7 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
         else:
             referer = BASE_URL + "/"
 
-    global _use_proxy_mode
+    global _use_proxy_mode, _request_blocked
     headers = {"Referer": referer, "Sec-Fetch-Site": "same-origin"}
     for attempt in range(1, retries + 1):
         try:
@@ -382,6 +393,7 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
 
             if resp.status_code == 429:
                 _last_429 = True
+                _saw_429 = True
                 _use_proxy_mode = True  # теперь переключаемся на прокси
                 print(f"[checko] 429 на {url} (попытка {attempt}/{retries}) — включаем прокси")
                 rotate_proxy()
@@ -406,8 +418,13 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
         if br.ok:
             return _PlaywrightResponse(br.text(), url)
         print(f"[checko] browser request → {br.status}")
+        if br.status == 429:
+            _saw_429 = True
     except Exception as e:
         print(f"[checko] browser request failed для {url}: {e}")
+
+    if _saw_429:
+        _request_blocked = True
     return None
 
 
@@ -1015,6 +1032,9 @@ def get_company_data(inn: str) -> dict:
         checko_url, revenue, taxes_total, income_tax_exists, income_tax_amount,
         director_name, director_inn, founders (list), website, emails, inn
     """
+    global _request_blocked
+    _request_blocked = False  # сбросить перед каждым поиском
+
     inn = inn.strip()
     if not inn:
         return {}
