@@ -230,6 +230,9 @@ def process_lead(page, lead: dict, stats: dict) -> tuple[str, str]:
             _company_prefetch = get_company_data(inn)
 
         if not _company_prefetch:
+            # Если провал связан с капчей — уходим на паузу, не закрываем лид
+            if checko_module.was_request_blocked():
+                raise CaptchaDetected(inn)
             log.warning("  Чекко не ответил при поиске сайта — оставляем в База")
             stats["errors"] += 1
             return ("error", "Не найден в Чекко")

@@ -831,7 +831,8 @@ es.addEventListener('pipeline', function(e) {
   }
 
   if (evt.type === 'captcha_detected') {
-    console.log('[SSE] капча обнаружена — показываем модальное окно');
+    console.log('КАПЧА СОБЫТИЕ ПОЛУЧЕНО');
+    alert('Checko просит капчу! Откройте checko.ru и пройдите проверку, затем нажмите Продолжить');
     isPaused = true;
     _updateControls();
     document.getElementById('captchaOverlay').classList.add('visible');
