@@ -37,7 +37,7 @@ from brizo import (
 )
 import checko as checko_module
 from checko import get_company_data, get_lpr_contacts, get_timezone_comment
-from qualifier import qualify_company, check_okved_skolkovo
+from qualifier import qualify_company
 
 load_dotenv()
 
@@ -70,7 +70,6 @@ STAGE_PARSING = "Парсю"
 REASON_NO_WEBSITE  = "Нет КД"
 REASON_TOO_BIG     = "Интересные, но ярд"
 REASON_LOW_TAX     = "Маленькая выручка/мало налогов"
-REASON_NON_TARGET  = "Нецелевой"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -295,17 +294,6 @@ def process_lead(page, lead: dict, stats: dict) -> tuple[str, str]:
 
     log.info("  Чекко: выручка=%s  налог на прибыль=%s",
              _fmt(revenue), [_fmt(t) for t in income_tax[:3]])
-
-    # ── d.5. ОКВЭД → проверка на Сколково ───────────────────────────────
-    okved_codes = company.get("okved_codes", [])
-    log.info("  ОКВЭД: %s", okved_codes)
-    skolkovo = check_okved_skolkovo(okved_codes)
-    log.info("  Сколково: %s", "Подходит" if skolkovo else "Нецелевой")
-    if not skolkovo:
-        _pause()
-        reject_lead(page, lead_id, REASON_NON_TARGET)
-        stats["rejected"][REASON_NON_TARGET] += 1
-        return ("rejected", REASON_NON_TARGET)
 
     # ── e. Прикрепить ссылку Чекко ───────────────────────────────────────
     if checko_url and not existing_checko:
