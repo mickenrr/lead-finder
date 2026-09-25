@@ -852,7 +852,7 @@ def _get_income_tax_from_taxes_page(company_url: str) -> tuple[list[int], int | 
         # URL might already be OGRN-only (e.g. /company/1047796514105)
         ogrn_m = re.search(r"/(\d{13,15})$", company_url.rstrip("/"))
     if not ogrn_m:
-        return []
+        return [], []
     ogrn = ogrn_m.group(1)
     taxes_url = f"{BASE_URL}/company/{ogrn}/taxes/data"
 
@@ -891,7 +891,7 @@ def _get_income_tax_from_taxes_page(company_url: str) -> tuple[list[int], int | 
             resp = _taxes_get()
         except requests.RequestException as e:
             print(f"[checko] taxes/data request failed: {e}")
-            return []
+            return [], []
 
     if resp is not None and resp.status_code == 429:
         print(f"[checko] taxes/data 429 — пробуем браузерный запрос")
@@ -906,18 +906,27 @@ def _get_income_tax_from_taxes_page(company_url: str) -> tuple[list[int], int | 
             resp = _PlaywrightResponse(br.text(), taxes_url, br.status)
         except Exception as e:
             print(f"[checko] taxes/data browser request failed: {e}")
-            return []
+            return [], []
 
     if resp.status_code != 200:
         # 404 = no tax page (госструктуры, иностранные юрлица и т.п.) — норма
         if resp.status_code != 404:
             print(f"[checko] taxes/data → {resp.status_code}")
-        return []
+        return [], []
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
     income_tax_amounts: list[int] = []
-    taxes_total_last_year: int | None = None
+    taxes_total_amounts: list[int] = []  # Итого за последние 3 года, новый год первым
+
+    def _parse_last3(year_values: list[str]) -> list[int]:
+        """Берёт последние 3 столбца (= последние 3 года) и разворачивает: новый год первым."""
+        last_3 = year_values[-3:] if len(year_values) >= 3 else year_values
+        result = []
+        for v in reversed(last_3):
+            cleaned = re.sub(r"[^\d]", "", v)
+            result.append(int(cleaned) if cleaned else 0)
+        return result
 
     for table in soup.find_all("table"):
         rows = table.find_all("tr")
@@ -937,24 +946,18 @@ def _get_income_tax_from_taxes_page(company_url: str) -> tuple[list[int], int | 
             year_values = [c.get_text(strip=True) for c in cells[1:]]
 
             if "Налог на прибыль" in row_name:
-                # Last 3 columns = last 3 years (right-to-left = newest-to-oldest)
-                last_3 = year_values[-3:] if len(year_values) >= 3 else year_values
-                income_tax_amounts = []
-                for v in reversed(last_3):   # most-recent year first
-                    cleaned = re.sub(r"[^\d]", "", v)
-                    income_tax_amounts.append(int(cleaned) if cleaned else 0)
+                income_tax_amounts = _parse_last3(year_values)
 
-            elif row_name == "Итого" or row_name.startswith("Итого ") or row_name.startswith("ИТОГО"):
-                # Last column = most recent year total
-                if year_values:
-                    cleaned = re.sub(r"[^\d]", "", year_values[-1])
-                    taxes_total_last_year = int(cleaned) if cleaned else None
+            elif row_name in ("Итого", "ИТОГО") or row_name.startswith("Итого ") or row_name.startswith("ИТОГО "):
+                # Те же 3 года что и для налога на прибыль — не только последний год,
+                # чтобы не ошибиться на неполном текущем году (например 2025 = 0 за 9 месяцев)
+                taxes_total_amounts = _parse_last3(year_values)
 
         # Found the right table — stop looking
-        if income_tax_amounts or taxes_total_last_year is not None:
+        if income_tax_amounts or taxes_total_amounts:
             break
 
-    return income_tax_amounts, taxes_total_last_year
+    return income_tax_amounts, taxes_total_amounts
 
 
 # ---------------------------------------------------------------------------
@@ -1024,7 +1027,7 @@ def enrich_with_taxes(data: dict, url: str) -> None:
     Call this after the duplicate / OKVED check so we avoid the extra HTTP request
     for companies that will be skipped anyway.
     """
-    tax_amounts, taxes_total = _get_income_tax_from_taxes_page(url)
+    tax_amounts, taxes_totals = _get_income_tax_from_taxes_page(url)
     if tax_amounts:
         data["income_tax_amounts"] = tax_amounts
         data["income_tax_amount"]  = tax_amounts[0]
@@ -1041,10 +1044,11 @@ def enrich_with_taxes(data: dict, url: str) -> None:
         data["income_tax_exists"]  = False
         print("[checko] taxes/data: не удалось получить — данные налога на прибыль сброшены (компания не квалифицируется)")
 
-    # Итого (общая сумма налогов за последний год) — для Критерия 2
-    if taxes_total is not None:
-        data["taxes_total_from_data"] = taxes_total
-        print(f"[checko] taxes/data: итого (последний год) = {taxes_total:,} руб")
+    # Итого (общая сумма налогов) за последние 3 года — для Критерия 2
+    if taxes_totals:
+        data["taxes_total_amounts"]  = taxes_totals
+        data["taxes_total_from_data"] = taxes_totals[0]   # последний год (для обратной совместимости)
+        print(f"[checko] taxes/data: итого (3 года) = {[f'{t:,}' for t in taxes_totals]}")
 
 
 def _fetch_contacts_section(company_url: str) -> tuple[str, list[str]]:
