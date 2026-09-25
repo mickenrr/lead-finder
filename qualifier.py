@@ -79,6 +79,12 @@ def qualify_company(
     if not ok:
         return (False, "Маленькая выручка/мало налогов")
 
+    # 2.5. Общая сумма налогов «Итого» за последний год — должна быть >= 5 млн
+    # Данные берутся из /taxes/data (authoritative). Если страница недоступна — не проверяем.
+    taxes_total = company_data.get("taxes_total_from_data")
+    if taxes_total is not None and taxes_total < INCOME_TAX_MIN:
+        return (False, "Маленькая выручка/мало налогов")
+
     # 3. Расширенные финансовые критерии (если заданы и данные доступны)
     if advanced_finance:
         for field, key in [

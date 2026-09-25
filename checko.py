@@ -831,13 +831,13 @@ def _find_emails_in_html(html: str) -> list[str]:
 # Income tax from detailed taxes page
 # ---------------------------------------------------------------------------
 
-def _get_income_tax_from_taxes_page(company_url: str) -> list[int]:
+def _get_income_tax_from_taxes_page(company_url: str) -> tuple[list[int], int | None]:
     """
-    Fetch checko.ru/company/{OGRN}/taxes/data and extract «Налог на прибыль»
-    for the last 3 calendar years (last 3 columns in the table, most-recent-first).
+    Fetch checko.ru/company/{OGRN}/taxes/data and extract two values:
+      - «Налог на прибыль»: last 3 calendar years, most-recent-first (list[int])
+      - «Итого»: total taxes for the last year (int | None)
 
-    Returns list of ints (rubles), e.g. [3_248_105, 1_378_558, 100_017].
-    Returns [] if the page is unavailable, table not found, or row missing.
+    Returns ([], None) if the page is unavailable or table not found.
 
     URL format: Checko's /taxes/data works only via OGRN, not slug.
       slug URL:  /company/npo-svyazproekt-5087746032589
@@ -916,6 +916,9 @@ def _get_income_tax_from_taxes_page(company_url: str) -> list[int]:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
+    income_tax_amounts: list[int] = []
+    taxes_total_last_year: int | None = None
+
     for table in soup.find_all("table"):
         rows = table.find_all("tr")
         if not rows:
@@ -925,26 +928,33 @@ def _get_income_tax_from_taxes_page(company_url: str) -> list[int]:
         if not header_cells or "Налоги" not in header_cells[0].get_text(strip=True):
             continue
 
+        # Scan ALL rows — we need both «Налог на прибыль» and «Итого»
         for row in rows[1:]:
             cells = row.find_all(["th", "td"])
             if not cells:
                 continue
-            if "Налог на прибыль" not in cells[0].get_text(strip=True):
-                continue
-
-            # Values: skip first cell (row name), take remaining columns = years
+            row_name = cells[0].get_text(strip=True)
             year_values = [c.get_text(strip=True) for c in cells[1:]]
-            # Last 3 columns = last 3 years
-            last_3 = year_values[-3:] if len(year_values) >= 3 else year_values
 
-            # Parse: "1 378 558" → 1_378_558, "—" / "–" / "" → 0
-            result: list[int] = []
-            for v in reversed(last_3):   # most-recent year first
-                cleaned = re.sub(r"[^\d]", "", v)
-                result.append(int(cleaned) if cleaned else 0)
-            return result
+            if "Налог на прибыль" in row_name:
+                # Last 3 columns = last 3 years (right-to-left = newest-to-oldest)
+                last_3 = year_values[-3:] if len(year_values) >= 3 else year_values
+                income_tax_amounts = []
+                for v in reversed(last_3):   # most-recent year first
+                    cleaned = re.sub(r"[^\d]", "", v)
+                    income_tax_amounts.append(int(cleaned) if cleaned else 0)
 
-    return []
+            elif row_name == "Итого" or row_name.startswith("Итого ") or row_name.startswith("ИТОГО"):
+                # Last column = most recent year total
+                if year_values:
+                    cleaned = re.sub(r"[^\d]", "", year_values[-1])
+                    taxes_total_last_year = int(cleaned) if cleaned else None
+
+        # Found the right table — stop looking
+        if income_tax_amounts or taxes_total_last_year is not None:
+            break
+
+    return income_tax_amounts, taxes_total_last_year
 
 
 # ---------------------------------------------------------------------------
@@ -1014,7 +1024,7 @@ def enrich_with_taxes(data: dict, url: str) -> None:
     Call this after the duplicate / OKVED check so we avoid the extra HTTP request
     for companies that will be skipped anyway.
     """
-    tax_amounts = _get_income_tax_from_taxes_page(url)
+    tax_amounts, taxes_total = _get_income_tax_from_taxes_page(url)
     if tax_amounts:
         data["income_tax_amounts"] = tax_amounts
         data["income_tax_amount"]  = tax_amounts[0]
@@ -1030,6 +1040,11 @@ def enrich_with_taxes(data: dict, url: str) -> None:
         data["income_tax_max_3y"]  = None
         data["income_tax_exists"]  = False
         print("[checko] taxes/data: не удалось получить — данные налога на прибыль сброшены (компания не квалифицируется)")
+
+    # Итого (общая сумма налогов за последний год) — для Критерия 2
+    if taxes_total is not None:
+        data["taxes_total_from_data"] = taxes_total
+        print(f"[checko] taxes/data: итого (последний год) = {taxes_total:,} руб")
 
 
 def _fetch_contacts_section(company_url: str) -> tuple[str, list[str]]:
@@ -1103,6 +1118,11 @@ def get_company_data(inn: str) -> dict:
             data["emails"] = emails
 
     print(f"[checko] Итог: сайт={data['website']!r}  почты={data['emails']}")
+
+    # Авторитетные данные о налогах из /taxes/data (ФНС)
+    # Перезаписывает значения из _parse_company_page, которые ненадёжны
+    enrich_with_taxes(data, company_url)
+
     return data
 
 
