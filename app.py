@@ -476,13 +476,14 @@ body{
 
 <!-- Captcha overlay -->
 <div id="captchaOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;align-items:center;justify-content:center;">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:40px 44px;max-width:500px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:40px 44px;max-width:520px;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.5);">
     <div style="font-size:52px;margin-bottom:12px">⚠️</div>
-    <h2 style="font-size:18px;font-weight:700;margin-bottom:14px;color:var(--yellow)">На Чекко требуется пройти капчу</h2>
-    <p style="font-size:14px;line-height:1.6;color:var(--text);margin-bottom:24px">
-      Откройте вручную <strong>checko.ru</strong> в браузере и пройдите проверку.<br>
-      После этого вернитесь в парсер и нажмите <strong>ПРОДОЛЖИТЬ</strong>.
-    </p>
+    <h2 style="font-size:18px;font-weight:700;margin-bottom:16px;color:var(--yellow)">Checko просит пройти капчу!</h2>
+    <div style="text-align:left;background:var(--surface2);border-radius:10px;padding:16px 20px;margin-bottom:24px;font-size:14px;line-height:1.8;color:var(--text);">
+      <div style="margin-bottom:6px"><span style="font-weight:700;color:var(--accent)">1.</span> Откройте <strong>checko.ru</strong> в вашем браузере</div>
+      <div style="margin-bottom:6px"><span style="font-weight:700;color:var(--accent)">2.</span> Нажмите галочку <strong>«Я не робот»</strong> и <strong>«Подтвердить»</strong></div>
+      <div><span style="font-weight:700;color:var(--accent)">3.</span> Вернитесь сюда и нажмите <strong>ПРОДОЛЖИТЬ</strong></div>
+    </div>
     <button onclick="resumeAfterCaptcha()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:12px 32px;font-size:15px;font-weight:700;cursor:pointer;transition:background .15s;" onmouseover="this.style.background='var(--accent-h)'" onmouseout="this.style.background='var(--accent)'">▶ ПРОДОЛЖИТЬ</button>
   </div>
 </div>

@@ -311,6 +311,21 @@ def _cleanup_pw():
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Текстовые маркеры Яндекс SmartCaptcha на страницах Checko
+_CAPTCHA_MARKERS = (
+    "smartcaptcha",
+    "я не робот",
+    "подтвердите, что вы человек",
+    "yandex smartcaptcha",
+)
+
+
+def _is_captcha_html(html: str) -> bool:
+    """Вернуть True если HTML содержит признаки Яндекс SmartCaptcha."""
+    lower = html.lower()
+    return any(m in lower for m in _CAPTCHA_MARKERS)
+
+
 def _pause() -> None:
     time.sleep(random.uniform(1.5, 2.5))
 
@@ -416,7 +431,12 @@ def _get(url: str, retries: int = 3, referer: str | None = None) -> requests.Res
         print(f"[checko] browser request для {url}")
         br = page.request.get(url, headers={"Referer": BASE_URL + "/"}, timeout=25_000)
         if br.ok:
-            return _PlaywrightResponse(br.text(), url)
+            html = br.text()
+            if _is_captcha_html(html):
+                print(f"[checko] ⚠️ КАПЧА в ответе browser request для {url}")
+                _request_blocked = True
+                return None
+            return _PlaywrightResponse(html, url)
         print(f"[checko] browser request → {br.status}")
         if br.status == 429:
             _saw_429 = True
@@ -484,11 +504,21 @@ def _resolve_url(inn: str) -> str | None:
         return None
 
     def _goto_and_find(target_url: str) -> str | None:
+        global _request_blocked
         try:
             print(f"[checko] browser goto: {target_url}")
             page.goto(target_url, timeout=30_000, wait_until="domcontentloaded")
             try:
                 page.wait_for_load_state("networkidle", timeout=8_000)
+            except Exception:
+                pass
+            # Проверяем: не показывает ли Checko капчу Яндекс SmartCaptcha
+            try:
+                html = page.content()
+                if _is_captcha_html(html):
+                    print(f"[checko] ⚠️ КАПЧА обнаружена на {page.url}")
+                    _request_blocked = True
+                    return None
             except Exception:
                 pass
             return _company_url_from_page()
@@ -500,6 +530,8 @@ def _resolve_url(inn: str) -> str | None:
 
     # ── 1. Основной: /?q={INN} ───────────────────────────────────────────────
     found = _goto_and_find(f"{BASE_URL}/?q={inn}")
+    if _request_blocked:
+        return None  # Капча — не пробуем второй URL
     if found:
         print(f"[checko] INN {inn} → {found}")
         return found
