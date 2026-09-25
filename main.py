@@ -566,6 +566,7 @@ def main() -> None:
                     captcha_hit = True
                     log.warning("  КАПЧА/БЛОКИРОВКА Checko — ставим парсер на паузу")
                     _emit("captcha_detected", lead_name=lead_name)
+                    time.sleep(1.5)  # дать SSE-стриму время доставить событие до браузера
                     os.kill(os.getpid(), signal.SIGSTOP)
                     # Возобновились после SIGCONT пользователем
                     log.info("  Возобновили работу — ждём 30 сек перед повтором лида")

@@ -185,6 +185,11 @@ def stream(run_id):
                 evt_idx += 1
                 yield f"event: pipeline\ndata: {evt_raw}\n\n"
 
+            # Keepalive: если данных не было — посылаем SSE-комментарий чтобы
+            # Railway/Nginx не разрывали соединение по idle-таймауту.
+            if not new_logs and not new_events and not is_done:
+                yield ":\n\n"
+
             if is_done and log_idx >= len(run['lines']) and evt_idx >= len(run['events']):
                 stats = _parse_final_stats(run['lines'])
                 yield f"event: done\ndata: {json.dumps(stats)}\n\n"
@@ -801,7 +806,14 @@ es.onmessage = function(e) {
 };
 
 es.addEventListener('pipeline', function(e) {
-  const evt = JSON.parse(e.data);
+  console.log('[SSE] pipeline событие получено:', e.data);
+  let evt;
+  try {
+    evt = JSON.parse(e.data);
+  } catch(err) {
+    console.error('[SSE] ошибка парсинга JSON:', err, e.data);
+    return;
+  }
 
   if (evt.type === 'total') {
     totalFound = evt.total;
@@ -819,6 +831,7 @@ es.addEventListener('pipeline', function(e) {
   }
 
   if (evt.type === 'captcha_detected') {
+    console.log('[SSE] капча обнаружена — показываем модальное окно');
     isPaused = true;
     _updateControls();
     document.getElementById('captchaOverlay').classList.add('visible');
