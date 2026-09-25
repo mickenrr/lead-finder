@@ -77,6 +77,42 @@ REASON_NON_TARGET  = "Нецелевой"
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+_FREE_EMAIL_DOMAINS: frozenset[str] = frozenset({
+    "mail.ru", "yandex.ru", "ya.ru", "gmail.com", "inbox.ru",
+    "list.ru", "bk.ru", "rambler.ru", "outlook.com", "hotmail.com",
+    "icloud.com", "yahoo.com", "protonmail.com", "mailbox.org",
+    "internet.ru", "ro.ru", "mail.com", "ukr.net",
+})
+
+
+def is_corporate_email(email: str) -> bool:
+    """Return True if the email domain is not a free/public mail provider."""
+    try:
+        domain = email.strip().lower().split("@")[1]
+    except IndexError:
+        return False
+    return domain not in _FREE_EMAIL_DOMAINS
+
+
+def _check_domain_site(domain: str) -> str | None:
+    """
+    Try https://{domain} then http://{domain}.
+    Return the URL if status 200 and content > 500 chars, else None.
+    """
+    for scheme in ("https", "http"):
+        url = f"{scheme}://{domain}"
+        try:
+            resp = requests.get(url, timeout=5, allow_redirects=True,
+                                headers=_SITE_HEADERS, verify=False)
+            if resp.status_code == 200 and len(resp.text) > 500:
+                return url
+        except requests.exceptions.SSLError:
+            continue
+        except Exception:
+            break
+    return None
+
+
 _PARKING_KEYWORDS = [
     # Russian
     "домен продаётся", "домен продается", "купить домен", "припаркован",
@@ -210,6 +246,44 @@ def process_lead(page, lead: dict, stats: dict) -> tuple[str, str]:
             deal_email   = checko_email
         else:
             log.info("  На Чекко тоже нет сайта/почты → Проиграно 'Нет КД'")
+            _pause()
+            reject_lead(page, lead_id, REASON_NO_WEBSITE)
+            stats["rejected"][REASON_NO_WEBSITE] += 1
+            return ("rejected", REASON_NO_WEBSITE)
+
+    # ── c.5. Если сайта нет, но есть почта — проверяем домен ────────────────
+    # Бесплатная почта (mail.ru, gmail.com и т.п.) не считается КД.
+    # Корпоративная почта → пробуем открыть https://{домен}:
+    #   открылся (200 + >500 символов) → записываем как сайт, продолжаем
+    #   не открылся                    → Нет КД
+    if not deal_website and deal_email:
+        if not is_corporate_email(deal_email):
+            log.info("  Почта бесплатная (%s) — КД нет → Проиграно 'Нет КД'", deal_email)
+            _pause()
+            reject_lead(page, lead_id, REASON_NO_WEBSITE)
+            stats["rejected"][REASON_NO_WEBSITE] += 1
+            return ("rejected", REASON_NO_WEBSITE)
+
+        try:
+            domain = deal_email.strip().lower().split("@")[1]
+        except IndexError:
+            domain = ""
+
+        if domain:
+            log.info("  Нет сайта, корпоративная почта %s — проверяем домен %s", deal_email, domain)
+            site_url = _check_domain_site(domain)
+            if site_url:
+                log.info("  Сайт по домену найден: %s — записываем в Brizo", site_url)
+                fill_contact_details(lead_id, website=site_url)
+                deal_website = site_url
+            else:
+                log.info("  Домен %s не открылся → Проиграно 'Нет КД'", domain)
+                _pause()
+                reject_lead(page, lead_id, REASON_NO_WEBSITE)
+                stats["rejected"][REASON_NO_WEBSITE] += 1
+                return ("rejected", REASON_NO_WEBSITE)
+        else:
+            log.info("  Невалидная почта (%s), домен не определён → Нет КД", deal_email)
             _pause()
             reject_lead(page, lead_id, REASON_NO_WEBSITE)
             stats["rejected"][REASON_NO_WEBSITE] += 1
